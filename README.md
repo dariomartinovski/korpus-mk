@@ -41,4 +41,4 @@ KorpusMK sends you a daily word from the official Macedonian dictionary — with
 
 ## About
 
-Words are sourced from [makedonski.gov.mk](https://makedonski.gov.mk) — the official Macedonian language dictionary. The bot sends a new word every day at **9:00am** Skopje time.
+Words are sourced from [makedonski.gov.mk](https://makedonski.gov.mk) — the official Macedonian language dictionary. The bot sends a new word every day at **11:00am** Skopje time.
