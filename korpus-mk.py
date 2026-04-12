@@ -3,6 +3,8 @@ import logging
 import sqlite3
 import os
 from datetime import date, time
+from threading import Thread
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
 import pytz
@@ -13,8 +15,8 @@ load_dotenv()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WORDS_FILE = "words_randomized_all.json"
 DB_FILE = "subscribers.db"
-SEND_HOUR = 17    # 11m
-SEND_MINUTE = 24
+SEND_HOUR = 9
+SEND_MINUTE = 0
 TIMEZONE = "Europe/Skopje"
 
 # --- Logging ---
@@ -22,6 +24,16 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
+
+# --- Flask (for Render to keep the service alive) ---
+flask_app = Flask(__name__)
+
+@flask_app.route('/health')
+def health():
+    return "OK", 200
+
+def run_flask():
+    flask_app.run(host='0.0.0.0', port=8080)
 
 # --- Database ---
 def init_db():
@@ -162,18 +174,21 @@ async def send_daily_word(context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     init_db()
 
+    # Start Flask in background thread
+    Thread(target=run_flask, daemon=True).start()
+
     tz = pytz.timezone(TIMEZONE)
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    bot_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CommandHandler("zbor", zbor))
-    app.add_handler(CommandHandler("stats", stats))
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("stop", stop))
+    bot_app.add_handler(CommandHandler("zbor", zbor))
+    bot_app.add_handler(CommandHandler("stats", stats))
 
-    app.job_queue.run_daily(
+    bot_app.job_queue.run_daily(
         send_daily_word,
         time=time(hour=SEND_HOUR, minute=SEND_MINUTE, tzinfo=tz)
     )
 
     print(f"🤖 Bot is running... Daily word at {SEND_HOUR:02d}:{SEND_MINUTE:02d} {TIMEZONE}")
-    app.run_polling()
+    bot_app.run_polling()
