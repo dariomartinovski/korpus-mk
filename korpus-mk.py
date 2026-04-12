@@ -8,6 +8,8 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
 import pytz
+import asyncio
+from telegram import Bot
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -169,6 +171,12 @@ async def send_daily_word(context: ContextTypes.DEFAULT_TYPE):
             failed += 1
 
     logging.info(f"Daily word sent. Failed/removed: {failed}")
+
+async def clear_updates():
+    bot = Bot(token=TELEGRAM_TOKEN)
+    await bot.delete_webhook(drop_pending_updates=True)
+
+asyncio.run(clear_updates())
 
 # --- Main ---
 if __name__ == "__main__":
