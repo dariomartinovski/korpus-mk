@@ -6,13 +6,15 @@ from datetime import date, time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
 import pytz
+from dotenv import load_dotenv
+load_dotenv()
 
 # --- CONFIG ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "TokenHere")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WORDS_FILE = "words_randomized_all.json"
 DB_FILE = "subscribers.db"
-SEND_HOUR = 9    # 9am
-SEND_MINUTE = 0
+SEND_HOUR = 17    # 11m
+SEND_MINUTE = 24
 TIMEZONE = "Europe/Skopje"
 
 # --- Logging ---
