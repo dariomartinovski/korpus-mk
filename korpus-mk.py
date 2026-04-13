@@ -18,8 +18,8 @@ load_dotenv()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WORDS_FILE = "words_randomized_all.json"
 DB_FILE = "subscribers.db"
-SEND_HOUR = 11
-SEND_MINUTE = 0
+SEND_HOUR = 22
+SEND_MINUTE = 20
 TIMEZONE = "Europe/Skopje"
 
 # --- Logging ---
