@@ -1,6 +1,6 @@
 import json
 import logging
-import sqlite3
+import psycopg2
 import os
 import random
 from datetime import date, time, datetime, timedelta
@@ -16,8 +16,8 @@ load_dotenv()
 
 # --- CONFIG ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 WORDS_FILE = "words_randomized_all.json"
-DB_FILE = "subscribers.db"
 SEND_HOUR = 11
 SEND_MINUTE = 0
 TIMEZONE = "Europe/Skopje"
@@ -105,42 +105,51 @@ def run_flask():
     flask_app.run(host='0.0.0.0', port=8080)
 
 # --- Database ---
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("""
+    conn = get_conn()
+    conn.cursor().execute("""
         CREATE TABLE IF NOT EXISTS subscribers (
-            chat_id INTEGER PRIMARY KEY,
+            chat_id BIGINT PRIMARY KEY,
             first_name TEXT,
-            subscribed_at TEXT DEFAULT CURRENT_TIMESTAMP
+            subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
     conn.close()
 
 def add_subscriber(chat_id, first_name):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute(
-        "INSERT OR IGNORE INTO subscribers (chat_id, first_name) VALUES (?, ?)",
+    conn = get_conn()
+    conn.cursor().execute(
+        "INSERT INTO subscribers (chat_id, first_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
         (chat_id, first_name)
     )
     conn.commit()
     conn.close()
 
 def remove_subscriber(chat_id):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
+    conn = get_conn()
+    conn.cursor().execute(
+        "DELETE FROM subscribers WHERE chat_id = %s", (chat_id,)
+    )
     conn.commit()
     conn.close()
 
 def get_all_subscribers():
-    conn = sqlite3.connect(DB_FILE)
-    rows = conn.execute("SELECT chat_id, first_name FROM subscribers").fetchall()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT chat_id, first_name FROM subscribers")
+    rows = cur.fetchall()
     conn.close()
     return rows
 
 def is_subscribed(chat_id):
-    conn = sqlite3.connect(DB_FILE)
-    row = conn.execute("SELECT 1 FROM subscribers WHERE chat_id = ?", (chat_id,)).fetchone()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM subscribers WHERE chat_id = %s", (chat_id,))
+    row = cur.fetchone()
     conn.close()
     return row is not None
 

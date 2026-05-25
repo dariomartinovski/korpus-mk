@@ -2,3 +2,4 @@ python-telegram-bot[job-queue]
 pytz
 python-dotenv
 flask
+psycopg2-binary
