@@ -6,11 +6,10 @@ import random
 from datetime import date, time, datetime, timedelta
 from threading import Thread
 from flask import Flask
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
+from telegram import Update, Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import pytz
 import asyncio
-from telegram import Bot
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -110,21 +109,28 @@ def get_conn():
 
 def init_db():
     conn = get_conn()
-    conn.cursor().execute("""
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS subscribers (
             chat_id BIGINT PRIMARY KEY,
             first_name TEXT,
+            username TEXT,
+            is_admin BOOLEAN DEFAULT FALSE,
             subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
     conn.close()
 
-def add_subscriber(chat_id, first_name):
+def add_subscriber(chat_id, first_name, username=None):
     conn = get_conn()
     conn.cursor().execute(
-        "INSERT INTO subscribers (chat_id, first_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-        (chat_id, first_name)
+        """INSERT INTO subscribers (chat_id, first_name, username)
+           VALUES (%s, %s, %s)
+           ON CONFLICT (chat_id) DO UPDATE SET
+               first_name = EXCLUDED.first_name,
+               username = EXCLUDED.username""",
+        (chat_id, first_name, username)
     )
     conn.commit()
     conn.close()
@@ -140,7 +146,7 @@ def remove_subscriber(chat_id):
 def get_all_subscribers():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT chat_id, first_name FROM subscribers")
+    cur.execute("SELECT chat_id, first_name, username FROM subscribers")
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -152,6 +158,14 @@ def is_subscribed(chat_id):
     row = cur.fetchone()
     conn.close()
     return row is not None
+
+def is_admin(chat_id: int) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT is_admin FROM subscribers WHERE chat_id = %s", (chat_id,))
+    row = cur.fetchone()
+    conn.close()
+    return bool(row and row[0])
 
 # --- Words ---
 def load_words():
@@ -176,6 +190,7 @@ def build_message(entry):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     first_name = update.effective_user.first_name
+    username = update.effective_user.username
 
     if is_subscribed(chat_id):
         await update.message.reply_text(
@@ -184,7 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    add_subscriber(chat_id, first_name)
+    add_subscriber(chat_id, first_name, username)
 
     words = load_words()
     entry = pick_word(words)
@@ -197,7 +212,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Еве го денешниот збор:\n\n{message}",
         parse_mode="Markdown"
     )
-    logging.info(f"New subscriber: {first_name} ({chat_id}). Total: {len(subscribers)}")
+    logging.info(f"New subscriber: {first_name} (@{username}) ({chat_id}). Total: {len(subscribers)}")
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -215,14 +230,12 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"Unsubscribed: {first_name} ({chat_id})")
 
 async def zbor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Today's word - same for everyone all day."""
     words = load_words()
     entry = pick_word(words)
     message = build_message(entry)
     await update.message.reply_text(message, parse_mode="Markdown")
 
 async def nov_zbor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """A random word from the list - different every time."""
     words = load_words()
     entry = random.choice(words)
     message = (
@@ -238,6 +251,83 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subscribers = get_all_subscribers()
     await update.message.reply_text(f"📊 Вкупно претплатници: {len(subscribers)}")
 
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Немаш дозвола за оваа команда.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❌ Употреба: /broadcast <текст>")
+        return
+
+    text = " ".join(context.args)
+    subscribers = get_all_subscribers()
+    await update.message.reply_text(f"📤 Испраќам до {len(subscribers)} претплатници...")
+
+    sent, failed = 0, 0
+    for chat_id, first_name, username in subscribers:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"📢 *Известување*\n━━━━━━━━━━━━━━━\n{text}",
+                parse_mode="Markdown"
+            )
+            sent += 1
+        except Exception as e:
+            logging.warning(f"Failed to send to {first_name} ({chat_id}): {e}")
+            failed += 1
+
+    await update.message.reply_text(f"✅ Пратено: {sent} | ❌ Неуспешно: {failed}")
+
+async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Немаш дозвола за оваа команда.")
+        return
+
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Употреба: /notify ime1,ime2 <текст>\n"
+            "Пример: /notify Марко,Ана Здраво!"
+        )
+        return
+
+    target_names = [n.strip().lower() for n in context.args[0].split(",")]
+    text = " ".join(context.args[1:])
+
+    all_subscribers = get_all_subscribers()
+
+    targets = [
+        (chat_id, first_name, username)
+        for chat_id, first_name, username in all_subscribers
+        if (username and username.lower() in target_names)
+        or (first_name and first_name.lower() in target_names)
+    ]
+
+    if not targets:
+        names = [f"@{un}" if un else fn for _, fn, un in all_subscribers]
+        await update.message.reply_text(
+            f"⚠️ Не се пронајдени: {context.args[0]}\n"
+            f"Достапни: {', '.join(names) if names else '(none)'}"
+        )
+        return
+
+    await update.message.reply_text(f"📤 Испраќам до {len(targets)} корисник(ци)...")
+
+    sent, failed = 0, 0
+    for chat_id, first_name, username in targets:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"📢 *Известување*\n━━━━━━━━━━━━━━━\n{text}",
+                parse_mode="Markdown"
+            )
+            sent += 1
+        except Exception as e:
+            logging.warning(f"Failed to send to {first_name} ({chat_id}): {e}")
+            failed += 1
+
+    await update.message.reply_text(f"✅ Пратено: {sent} | ❌ Неуспешно: {failed}")
+
 # --- Scheduled daily send ---
 async def send_daily_word(context: ContextTypes.DEFAULT_TYPE):
     words = load_words()
@@ -248,7 +338,7 @@ async def send_daily_word(context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"Sending daily word to {len(subscribers)} subscribers...")
 
     failed = 0
-    for chat_id, first_name in subscribers:
+    for chat_id, first_name, username in subscribers:
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -282,6 +372,8 @@ if __name__ == "__main__":
     bot_app.add_handler(CommandHandler("zbor", zbor))
     bot_app.add_handler(CommandHandler("nov_zbor", nov_zbor))
     bot_app.add_handler(CommandHandler("stats", stats))
+    bot_app.add_handler(CommandHandler("broadcast", broadcast))
+    bot_app.add_handler(CommandHandler("notify", notify))
 
     bot_app.job_queue.run_daily(
         send_daily_word,

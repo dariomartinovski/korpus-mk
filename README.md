@@ -20,7 +20,27 @@ KorpusMK sends you a daily word from the official Macedonian dictionary — with
 |---------|-------------|
 | `/start` | Subscribe and get today's word right away |
 | `/zbor` | Get today's word at any time |
+| `/nov_zbor` | Get a random word from the list |
 | `/stop` | Unsubscribe from daily messages |
+
+---
+
+## Admin Commands
+
+These commands are only available to admins, set directly in the database.
+
+| Command | What it does |
+|---------|-------------|
+| `/broadcast <text>` | Send a message to all subscribers |
+| `/notify <name1,name2> <text>` | Send a message to specific subscribers by first name |
+| `/stats` | Show total number of subscribers |
+
+Examples:
+```
+/broadcast Одржување утре од 10-12ч. Ботот нема да биде достапен.
+/notify Марко Здраво, ова е само за тебе!
+/notify Марко,Ана Одржување утре!
+```
 
 ---
 
