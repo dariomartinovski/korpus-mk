@@ -18,9 +18,8 @@ load_dotenv()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 WORDS_FILE = "words_randomized_all.json"
-SEND_HOUR = 11
-SEND_MINUTE = 0
 TIMEZONE = "Europe/Skopje"
+DEFAULT_SEND_TIME = "11:00"
 
 # --- Logging ---
 logging.basicConfig(
@@ -38,7 +37,8 @@ def index():
 
     tz = pytz.timezone(TIMEZONE)
     now = datetime.now(tz)
-    next_send = now.replace(hour=SEND_HOUR, minute=SEND_MINUTE, second=0, microsecond=0)
+    default_hour, default_minute = map(int, DEFAULT_SEND_TIME.split(":"))
+    next_send = now.replace(hour=default_hour, minute=default_minute, second=0, microsecond=0)
     if now >= next_send:
         next_send += timedelta(days=1)
     diff = int((next_send - now).total_seconds()) * 1000
@@ -117,21 +117,26 @@ def init_db():
             first_name TEXT,
             username TEXT,
             is_admin BOOLEAN DEFAULT FALSE,
+            send_time TIME DEFAULT '11:00:00',
             subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS username TEXT")
+    cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS send_time TIME DEFAULT '11:00:00'")
     conn.commit()
     conn.close()
 
-def add_subscriber(chat_id, first_name, username=None):
+def add_subscriber(chat_id, first_name, username=None, send_time=DEFAULT_SEND_TIME):
     conn = get_conn()
     conn.cursor().execute(
-        """INSERT INTO subscribers (chat_id, first_name, username)
-           VALUES (%s, %s, %s)
+        """INSERT INTO subscribers (chat_id, first_name, username, send_time)
+           VALUES (%s, %s, %s, %s)
            ON CONFLICT (chat_id) DO UPDATE SET
                first_name = EXCLUDED.first_name,
                username = EXCLUDED.username""",
-        (chat_id, first_name, username)
+        (chat_id, first_name, username, send_time)
     )
     conn.commit()
     conn.close()
@@ -151,6 +156,27 @@ def get_all_subscribers():
     rows = cur.fetchall()
     conn.close()
     return rows
+
+def get_subscribers_for_time(send_time: str):
+    """Get all subscribers whose send_time matches the given HH:MM."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT chat_id, first_name, username FROM subscribers WHERE to_char(send_time, 'HH24:MI') = %s",
+        (send_time,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def update_send_time(chat_id, send_time: str):
+    conn = get_conn()
+    conn.cursor().execute(
+        "UPDATE subscribers SET send_time = %s WHERE chat_id = %s",
+        (send_time, chat_id)
+    )
+    conn.commit()
+    conn.close()
 
 def is_subscribed(chat_id):
     conn = get_conn()
@@ -191,20 +217,45 @@ def build_message(entry):
         f"📌 *Значење:*\n{entry['definition']}"
     )
 
+# --- Helpers ---
+def parse_time_arg(arg: str):
+    """Parse HH:MM string, return (hour, minute) or None if invalid."""
+    try:
+        parts = arg.strip().split(":")
+        if len(parts) != 2:
+            return None
+        h, m = int(parts[0]), int(parts[1])
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h, m
+        return None
+    except ValueError:
+        return None
+
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     first_name = update.effective_user.first_name
     username = update.effective_user.username
 
+    # Parse optional time argument
+    send_time = DEFAULT_SEND_TIME
+    if context.args:
+        parsed = parse_time_arg(context.args[0])
+        if parsed is None:
+            await update.message.reply_text(
+                "❌ Невалидно време. Користи формат HH:MM (24 часовен), пр. /start 17:00"
+            )
+            return
+        send_time = f"{parsed[0]:02d}:{parsed[1]:02d}"
+
     if is_subscribed(chat_id):
         await update.message.reply_text(
-            f"👋 Веќе си претплатен, {first_name}! Ќе добиваш збор на денот секој ден во {SEND_HOUR:02d}:{SEND_MINUTE:02d}ч.\n\n"
-            f"Напиши /zbor за да го добиеш денешниот збор."
+            f"👋 Веќе си претплатен, {first_name}!\n"
+            f"За промена на времето напиши /set_time HH:MM"
         )
         return
 
-    add_subscriber(chat_id, first_name, username)
+    add_subscriber(chat_id, first_name, username, send_time)
 
     words = load_words()
     entry = pick_word(words)
@@ -213,11 +264,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subscribers = get_all_subscribers()
     await update.message.reply_text(
         f"👋 Добредојде, {first_name}! Претплатен си на *Збор на денот*.\n"
-        f"Ќе добиваш порака секој ден во {SEND_HOUR:02d}:{SEND_MINUTE:02d}ч.\n\n"
+        f"Ќе добиваш порака секој ден во *{send_time}ч*.\n\n"
         f"Еве го денешниот збор:\n\n{message}",
         parse_mode="Markdown"
     )
-    logging.info(f"New subscriber: {first_name} (@{username}) ({chat_id}). Total: {len(subscribers)}")
+    logging.info(f"New subscriber: {first_name} (@{username}) ({chat_id}) at {send_time}. Total: {len(subscribers)}")
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -233,6 +284,37 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Напиши /start ако сакаш да се претплатиш повторно."
     )
     logging.info(f"Unsubscribed: {first_name} ({chat_id})")
+
+async def settime(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    first_name = update.effective_user.first_name
+
+    if not is_subscribed(chat_id):
+        await update.message.reply_text("Не си претплатен. Напиши /start за да се претплатиш.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Употреба: /set_time HH:MM\n"
+            "Пример: /set_time 17:00"
+        )
+        return
+
+    parsed = parse_time_arg(context.args[0])
+    if parsed is None:
+        await update.message.reply_text(
+            "❌ Невалидно време. Користи формат HH:MM, пр. /set_time 17:00"
+        )
+        return
+
+    send_time = f"{parsed[0]:02d}:{parsed[1]:02d}"
+    update_send_time(chat_id, send_time)
+
+    await update.message.reply_text(
+        f"✅ Времето е променето! Ќе добиваш збор на денот секој ден во *{send_time}ч*.",
+        parse_mode="Markdown"
+    )
+    logging.info(f"Updated send time for {first_name} ({chat_id}) to {send_time}")
 
 async def zbor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     words = load_words()
@@ -362,7 +444,6 @@ async def define(update: Update, context: ContextTypes.DEFAULT_TYPE):
     similar = get_close_matches(query, [w.lower() for w in all_word_strings], n=3, cutoff=0.7)
 
     if similar:
-        # Map back to original casing
         similar_display = [w for w in all_word_strings if w.lower() in similar]
         await update.message.reply_text(
             f"❌ Зборот *{query}* не е пронајден.\n\n"
@@ -377,12 +458,19 @@ async def define(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Scheduled daily send ---
 async def send_daily_word(context: ContextTypes.DEFAULT_TYPE):
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
+    current_time = now.strftime("%H:%M")
+
+    subscribers = get_subscribers_for_time(current_time)
+    if not subscribers:
+        return
+
     words = load_words()
     entry = pick_word(words)
     message = build_message(entry)
-    subscribers = get_all_subscribers()
 
-    logging.info(f"Sending daily word to {len(subscribers)} subscribers...")
+    logging.info(f"Sending daily word at {current_time} to {len(subscribers)} subscribers...")
 
     failed = 0
     for chat_id, first_name, username in subscribers:
@@ -397,7 +485,7 @@ async def send_daily_word(context: ContextTypes.DEFAULT_TYPE):
             remove_subscriber(chat_id)
             failed += 1
 
-    logging.info(f"Daily word sent. Failed/removed: {failed}")
+    logging.info(f"Done. Failed/removed: {failed}")
 
 async def clear_updates():
     bot = Bot(token=TELEGRAM_TOKEN)
@@ -416,6 +504,7 @@ if __name__ == "__main__":
 
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("stop", stop))
+    bot_app.add_handler(CommandHandler("set_time", settime))
     bot_app.add_handler(CommandHandler("zbor", zbor))
     bot_app.add_handler(CommandHandler("nov_zbor", nov_zbor))
     bot_app.add_handler(CommandHandler("stats", stats))
@@ -423,10 +512,8 @@ if __name__ == "__main__":
     bot_app.add_handler(CommandHandler("notify", notify))
     bot_app.add_handler(CommandHandler("define", define))
 
-    bot_app.job_queue.run_daily(
-        send_daily_word,
-        time=time(hour=SEND_HOUR, minute=SEND_MINUTE, tzinfo=tz)
-    )
+    seconds_until_next_minute = 60 - datetime.now().second
+    bot_app.job_queue.run_repeating(send_daily_word, interval=60, first=seconds_until_next_minute)
 
-    print(f"🤖 Bot is running... Daily word at {SEND_HOUR:02d}:{SEND_MINUTE:02d} {TIMEZONE}")
+    print(f"🤖 Bot is running... Daily word scheduler active ({TIMEZONE})")
     bot_app.run_polling()
