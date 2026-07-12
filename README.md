@@ -21,6 +21,7 @@ KorpusMK sends you a daily word from the official Macedonian dictionary — with
 | `/start` | Subscribe and get today's word right away |
 | `/zbor` | Get today's word at any time |
 | `/nov_zbor` | Get a random word from the list |
+| `/define <word>` | Look up any word in the full dictionary |
 | `/stop` | Unsubscribe from daily messages |
 
 ---
@@ -44,8 +45,9 @@ Examples:
 
 ---
 
-## Example Message
+## Example Messages
 
+**Daily word / `/zbor`:**
 ```
 📖 Збор на денот
 ━━━━━━━━━━━━━━━
@@ -55,6 +57,23 @@ Examples:
 
 📌 Значење:
 Чувство на признателност кон некого за направено добро.
+```
+
+**`/define корумпиран`:**
+```
+📖 корумпиран
+━━━━━━━━━━━━━━━
+📝 придавка
+
+📌 Значење:
+Оној што е поткупен, продаден.
+```
+
+**`/define` with a typo (`/define корумпирн`):**
+```
+❌ Зборот корумпирн не е пронајден.
+
+Мислевте ли на: корумпиран?
 ```
 
 ---

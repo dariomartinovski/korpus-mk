@@ -10,6 +10,7 @@ from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import pytz
 import asyncio
+from difflib import get_close_matches
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -173,6 +174,10 @@ def load_words():
         words = json.load(f)
     return [w for w in words if w.get("difficulty", 0) >= 5]
 
+def load_all_words():
+    with open(WORDS_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
 def pick_word(words):
     day_index = date.today().timetuple().tm_yday
     return words[day_index % len(words)]
@@ -328,6 +333,48 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Пратено: {sent} | ❌ Неуспешно: {failed}")
 
+async def define(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Употреба: /define <збор>\n"
+            "Пример: /define корумпиран"
+        )
+        return
+
+    query = " ".join(context.args).strip().lower()
+    words = load_all_words()
+
+    # Try exact match first (case-insensitive)
+    match = next((w for w in words if w["word"].lower() == query), None)
+
+    if match:
+        message = (
+            f"📖 *{match['word']}*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📝 _{match['type']}_\n\n"
+            f"📌 *Значење:*\n{match['definition']}"
+        )
+        await update.message.reply_text(message, parse_mode="Markdown")
+        return
+
+    # No exact match - look for similar words
+    all_word_strings = [w["word"] for w in words]
+    similar = get_close_matches(query, [w.lower() for w in all_word_strings], n=3, cutoff=0.7)
+
+    if similar:
+        # Map back to original casing
+        similar_display = [w for w in all_word_strings if w.lower() in similar]
+        await update.message.reply_text(
+            f"❌ Зборот *{query}* не е пронајден.\n\n"
+            f"Дали мислевте на: {', '.join(similar_display)}?",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(
+            f"❌ Зборот *{query}* не е пронајден во речникот.",
+            parse_mode="Markdown"
+        )
+
 # --- Scheduled daily send ---
 async def send_daily_word(context: ContextTypes.DEFAULT_TYPE):
     words = load_words()
@@ -374,6 +421,7 @@ if __name__ == "__main__":
     bot_app.add_handler(CommandHandler("stats", stats))
     bot_app.add_handler(CommandHandler("broadcast", broadcast))
     bot_app.add_handler(CommandHandler("notify", notify))
+    bot_app.add_handler(CommandHandler("define", define))
 
     bot_app.job_queue.run_daily(
         send_daily_word,
