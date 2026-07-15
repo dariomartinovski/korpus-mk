@@ -379,7 +379,7 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target_names = [n.strip().lower() for n in context.args[0].split(",")]
-    text = " ".join(context.args[1:])
+    text = " ".join(context.args[1:]).replace("\\n", "\n")
 
     all_subscribers = get_all_subscribers()
 
