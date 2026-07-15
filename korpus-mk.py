@@ -347,7 +347,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Употреба: /broadcast <текст>")
         return
 
-    text = " ".join(context.args)
+    text = " ".join(context.args).replace("\\n", "\n")
     subscribers = get_all_subscribers()
     await update.message.reply_text(f"📤 Испраќам до {len(subscribers)} претплатници...")
 
