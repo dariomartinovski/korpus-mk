@@ -6,8 +6,8 @@ import random
 from datetime import date, time, datetime, timedelta
 from threading import Thread
 from flask import Flask
-from telegram import Update, Bot
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 import pytz
 import asyncio
 from difflib import get_close_matches
@@ -122,6 +122,17 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS quiz_answers (
+            id BIGSERIAL PRIMARY KEY,
+            chat_id BIGINT REFERENCES subscribers(chat_id) ON DELETE CASCADE,
+            word TEXT NOT NULL,
+            correct BOOLEAN NOT NULL,
+            quiz_type TEXT NOT NULL,  -- 'random' or 'daily'
+            answered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS username TEXT")
     cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE")
     cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS send_time TIME DEFAULT '11:00:00'")
@@ -194,6 +205,16 @@ def is_admin(chat_id: int) -> bool:
     conn.close()
     return bool(row and row[0])
 
+def save_quiz_answer(chat_id: int, word: str, correct: bool, quiz_type: str):
+    conn = get_conn()
+    conn.cursor().execute(
+        """INSERT INTO quiz_answers (chat_id, word, correct, quiz_type)
+           VALUES (%s, %s, %s, %s)""",
+        (chat_id, word, correct, quiz_type)
+    )
+    conn.commit()
+    conn.close()
+
 # --- Words ---
 def load_words():
     with open(WORDS_FILE, encoding="utf-8") as f:
@@ -230,6 +251,37 @@ def parse_time_arg(arg: str):
         return None
     except ValueError:
         return None
+
+def build_quiz(words, word_entry):
+    """Build a quiz for a given word entry with 4 options (1 correct, 3 random)."""
+    correct = word_entry
+    # Pick 3 random wrong answers (different words)
+    wrong_pool = [w for w in words if w["word"] != correct["word"]]
+    wrong = random.sample(wrong_pool, 3)
+
+    options = wrong + [correct]
+    random.shuffle(options)
+
+    correct_index = next(i for i, o in enumerate(options) if o["word"] == correct["word"])
+
+    text = (
+        f"🧠 *Квиз*\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"Кој е точниот збор за оваа дефиниција?\n\n"
+        f"📌 *{correct['definition']}*\n\n"
+        f"Избери го точниот збор:"
+    )
+
+    # Show word options as buttons, not definitions
+    keyboard = [
+        [InlineKeyboardButton(
+            f"{i+1}. {o['word']}",
+            callback_data=f"quiz_{i}_{correct_index}_{correct['word']}"
+        )]
+        for i, o in enumerate(options)
+    ]
+
+    return text, InlineKeyboardMarkup(keyboard)
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -456,6 +508,53 @@ async def define(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
+async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Random quiz — pick a random word with difficulty >= 5."""
+    words = load_words()
+    entry = random.choice(words)
+    text, markup = build_quiz(words, entry)
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
+
+
+async def daily_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Quiz for the word from exactly 7 days ago."""
+    words = load_words()
+    day_index = (date.today().timetuple().tm_yday - 7) % len(words)
+    entry = words[day_index]
+    text, markup = build_quiz(words, entry)
+    await update.message.reply_text(
+        f"📅 *Квиз за зборот од пред 7 дена*\n\n{text}",
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+
+
+async def quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split("_", 3)  # quiz, chosen, correct_index, word
+    chosen = int(parts[1])
+    correct = int(parts[2])
+    word = parts[3]
+    chat_id = query.from_user.id
+
+    # Detect quiz type from message text
+    quiz_type = "daily" if "пред 7 дена" in query.message.text else "random"
+
+    is_correct = chosen == correct
+    save_quiz_answer(chat_id, word, is_correct, quiz_type)
+
+    if is_correct:
+        result = "✅ *Точно!* Браво!"
+    else:
+        result = f"❌ *Нeточно.* Точниот одговор беше бр. {correct + 1}."
+
+    await query.edit_message_text(
+        text=f"{query.message.text}\n\n{result}",
+        parse_mode="Markdown"
+    )
+
 # --- Scheduled daily send ---
 async def send_daily_word(context: ContextTypes.DEFAULT_TYPE):
     tz = pytz.timezone(TIMEZONE)
@@ -511,6 +610,9 @@ if __name__ == "__main__":
     bot_app.add_handler(CommandHandler("broadcast", broadcast))
     bot_app.add_handler(CommandHandler("notify", notify))
     bot_app.add_handler(CommandHandler("define", define))
+    bot_app.add_handler(CommandHandler("quiz", quiz))
+    bot_app.add_handler(CommandHandler("daily_quiz", daily_quiz))
+    bot_app.add_handler(CallbackQueryHandler(quiz_answer, pattern=r"^quiz_"))
 
     seconds_until_next_minute = 60 - datetime.now().second
     bot_app.job_queue.run_repeating(send_daily_word, interval=60, first=seconds_until_next_minute)
